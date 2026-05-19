@@ -16,4 +16,15 @@ Classifying AI-generated Ukiyo-e art from human-created woodblock prints using E
 AI-ArtBench (Ukiyo-e subset): https://www.kaggle.com/datasets/ravidussilva/real-ai-art
 
 ## Requirements
+Requirements
+
+Python 3.11
+PyTorch
+torchvision
+scikit-learn
+matplotlib
+numpy
+shap
+
 pip install torch torchvision scikit-learn matplotlib numpy shap
+
