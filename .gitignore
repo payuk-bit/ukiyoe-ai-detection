@@ -1,0 +1,16 @@
+# Data and models
+data/
+results/
+*.pth
+ai-artbench/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+sample_batch.png
