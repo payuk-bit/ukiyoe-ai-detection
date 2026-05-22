@@ -20,7 +20,8 @@ from train_gabor import EfficientNetGabor
 
 warnings.filterwarnings("ignore")
 
-
+#   use SHAP GradientExplainer for pixel-level feature attribution:
+#   Lundberg, S. M., & Lee, S.-I. (2017). A Unified Approach to Interpreting Model Predictions. NeurIPS 2017.
 
 #1.Configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -45,7 +46,7 @@ print(f"Using device: {DEVICE}")
 
 #2.Model wrapper
 class SHAPModelWrapper(nn.Module):
-#Wraps any model to guarantee output shape (N, 1).
+#wraps any model to guarantee output shape (N, 1).
 #SHAP GradientExplainer needs consistent output dimensions.
    
     def __init__(self, model):
@@ -54,7 +55,7 @@ class SHAPModelWrapper(nn.Module):
 
     def forward(self, x):
         out = self.model(x)
-        # Ensure output is (N, 1)
+        #make sure output is (N, 1)
         if out.ndim == 1:
             out = out.unsqueeze(1)
         if out.ndim == 2 and out.shape[1] != 1:
@@ -64,6 +65,7 @@ class SHAPModelWrapper(nn.Module):
 
 
 #3.Model loader
+#load model and wrap for SHAP compatibility.
 def load_model(model_type: str, model_path: Path) -> nn.Module:
     if model_type == "baseline":
         model = build_model()
@@ -88,7 +90,7 @@ def load_model(model_type: str, model_path: Path) -> nn.Module:
 
 
 #4.Data prep
-def get_eval_transform():
+def get_eval_transform(): #Eval transform: resize, tensor, normalize.
     return transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE),
                           interpolation=transforms.InterpolationMode.BILINEAR,
@@ -98,7 +100,7 @@ def get_eval_transform():
     ])
 
 
-def load_images_as_tensor(dataset, indices):
+def load_images_as_tensor(dataset, indices):  #load specific images by index and return as a stacked tensor."""
     transform = get_eval_transform()
     images = []
     labels = []
@@ -111,7 +113,7 @@ def load_images_as_tensor(dataset, indices):
     return torch.stack(images), labels
 
 
-def denormalize(tensor):
+def denormalize(tensor):  #reverse normalization for display.
     mean = torch.tensor(UKIYOE_MEAN).view(3, 1, 1)
     std = torch.tensor(UKIYOE_STD).view(3, 1, 1)
     return (tensor.cpu() * std + mean).clamp(0, 1)
@@ -120,11 +122,11 @@ def denormalize(tensor):
 
 #5.Calcuting SHAP
 def compute_shap_values(model, background_data, explain_data):
-    """
-    Compute SHAP values using GradientExplainer.
-    Processes images in small batches to avoid memory issues.
-    Returns numpy array of shape (N, 3, H, W).
-    """
+    
+    #calculateompute SHAP values using GradientExplainer (Lundberg & Lee, 2017).
+    #processes images in small batches to avoid memory issues.
+    #returns numpy array of shape (N, 3, H, W).
+    
     background_data = background_data.to(DEVICE)
 
     explainer = shap.GradientExplainer(model, background_data)
@@ -136,25 +138,25 @@ def compute_shap_values(model, background_data, explain_data):
         batch = explain_data[i:i + batch_size].to(DEVICE)
         sv = explainer.shap_values(batch)
 
-        #Handle list output 
+        #handle list output 
         if isinstance(sv, list):
             sv = sv[0]
 
-        #Convert to numpy
+        #convert to numpy
         if isinstance(sv, torch.Tensor):
             sv = sv.cpu().numpy()
         else:
             sv = np.array(sv)
 
         
-       #Print shape on first batch for debugging
+       #print shape on first batch for debugging
         if i == 0:
             print(f"    Raw SHAP batch shape: {sv.shape}")
 
-        #Remove trailing dimension of 1 
+        #remove trailing dimension of 1 
         sv = sv.squeeze(-1)
 
-        # Fix shape 
+        # fixes shape 
         if sv.ndim == 5:
             sv = sv[0]
         if sv.ndim == 4:
@@ -181,7 +183,7 @@ def compute_shap_values(model, background_data, explain_data):
 def plot_shap_examples(shap_values, images, labels, model_name, save_dir,
                        n_show=8):
     n_show = min(n_show, shap_values.shape[0])
-
+ #plot original, SHAP heatmap, and overlay for sample images.
     fig, axes = plt.subplots(3, n_show, figsize=(2.5 * n_show, 8))
 
     for i in range(n_show):
@@ -214,7 +216,7 @@ def plot_shap_examples(shap_values, images, labels, model_name, save_dir,
 
 def plot_mean_importance(shap_values, model_name, save_dir):
     mean_shap = np.abs(shap_values).mean(axis=(0, 1))
-
+ #plot mean SHAP importance map averaged across all images.
     fig, ax = plt.subplots(figsize=(6, 5))
     im = ax.imshow(mean_shap, cmap="hot")
     ax.set_title(f"Mean SHAP Importance — {model_name}", fontsize=12)
@@ -226,7 +228,7 @@ def plot_mean_importance(shap_values, model_name, save_dir):
     plt.show()
 
 
-def plot_by_class(shap_values, labels, model_name, save_dir):
+def plot_by_class(shap_values, labels, model_name, save_dir):  #Plot SHAP maps separated by class with difference map.
     labels_arr = np.array(labels)
     human_idx = labels_arr == 0
     ai_idx = labels_arr == 1
@@ -263,7 +265,7 @@ def plot_by_class(shap_values, labels, model_name, save_dir):
     print(f"  Saved class comparison for {model_name}")
 
 
-def plot_channel_importance(shap_values, model_name, save_dir):
+def plot_channel_importance(shap_values, model_name, save_dir): # make bar chart of mean |SHAP| per RGB channel."""
     r_imp = float(np.abs(shap_values[:, 0, :, :]).mean())
     g_imp = float(np.abs(shap_values[:, 1, :, :]).mean())
     b_imp = float(np.abs(shap_values[:, 2, :, :]).mean())
@@ -293,7 +295,7 @@ def plot_channel_importance(shap_values, model_name, save_dir):
 def plot_model_comparison(all_results: dict, save_dir: Path):
     n_models = len(all_results)
     fig, axes = plt.subplots(1, n_models, figsize=(5 * n_models, 4.5))
-
+ # make side-by-side mean SHAP maps for all models.
     if n_models == 1:
         axes = [axes]
 
@@ -317,7 +319,7 @@ def plot_region_analysis(all_results: dict, save_dir: Path):
         "Mid-left", "Center", "Mid-right",
         "Bot-left", "Bot-center", "Bot-right",
     ]
-
+#3x3 spatial grid analysis comparing models.
     h, w = IMG_SIZE, IMG_SIZE
     h3, w3 = h // 3, w // 3
 
@@ -364,10 +366,10 @@ if __name__ == "__main__":
     print("SHAP Explainability Analysis (GradientExplainer)")
     print("=" * 60)
 
-    #Load test dataset
+    #load test dataset
     test_dataset = UkiyoeDataset(DATASET_ROOT, split="test", transform=None)
 
-    #Select balanced samples
+    #select the balanced samples
     human_indices = [i for i, (_, l) in enumerate(test_dataset.samples) if l == 0]
     ai_indices = [i for i, (_, l) in enumerate(test_dataset.samples) if l == 1]
 
@@ -385,7 +387,7 @@ if __name__ == "__main__":
     explain_data, explain_labels = load_images_as_tensor(test_dataset, explain_indices)
     print(f"  Images shape: {explain_data.shape}")
 
-    #Run SHAP for each model
+    #run SHAP for each model
     all_results = {}
 
     for model_name, model_type, model_path in MODELS:
@@ -399,13 +401,13 @@ if __name__ == "__main__":
 
         model = load_model(model_type, model_path)
 
-        # Calculate SHAP values
+        # calculate SHAP values
         print(f"  Computing SHAP values...")
         shap_values = compute_shap_values(model, background_data, explain_data)
 
         all_results[model_name] = shap_values
 
-        #Visualizations
+        #visualizations
         plot_shap_examples(shap_values, explain_data, explain_labels,
                            model_name, SAVE_DIR)
         plot_mean_importance(shap_values, model_name, SAVE_DIR)
@@ -416,7 +418,7 @@ if __name__ == "__main__":
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    #Model comparisons
+    #model comparisons
     if len(all_results) > 1:
         print("\n" + "=" * 60)
         print("Cross-model comparison")

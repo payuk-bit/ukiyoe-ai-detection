@@ -12,6 +12,10 @@
 #  - 'middle' : After block 5 (mid-level features)
 #  - 'late'   : After block 7 (high-level features)
 
+# The use of 2D FFT magnitude spectrum for detecting AI-generated images is based on:
+#   Bammey, Q. (2023). Synthbuster: Towards Detection of Diffusion Model Generated Images. IEEE Open J. Signal Processing.
+#   doi: 10.1109/OJSP.2023.3337714
+
 import os
 import time
 import json
@@ -30,7 +34,7 @@ import matplotlib.pyplot as plt
 
 from dataset import get_dataloaders, DATASET_ROOT, IMG_SIZE, BATCH_SIZE
 
-#1.Configuration
+#1.Configuration same as Effecienet.py
 EPOCHS = 20
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
@@ -58,14 +62,14 @@ class FFTLayer(nn.Module):
         super().__init__()
         self.in_channels = in_channels
 
-        #Learnable weighting of frequency components
+        #learnable weighting of frequency components
         self.freq_weight = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
         )
 
-        #Channel reduction: concatenated spatial + freq, back to original
+        #channel reduction: concatenated spatial + freq, back to original
         self.channel_reduce = nn.Sequential(
             nn.Conv2d(in_channels * 2, in_channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(in_channels),
@@ -74,21 +78,23 @@ class FFTLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
-        #Compute 2D FFT and shift zero-frequency to center
+        #calculate 2D FFT and shift zero-frequency to center
+        # (Bammey, 2023)
         fft = torch.fft.fft2(x, norm="ortho")
         fft_shifted = torch.fft.fftshift(fft)
 
-        #Extract magnitude spectrum 
+        #extract magnitude spectrum 
+        # (Bammey, 2023)
         magnitude = torch.abs(fft_shifted)
         magnitude = torch.log1p(magnitude)
 
-        #Learn which frequency components matter
+        #learn which frequency components matter
         freq_features = self.freq_weight(magnitude)
 
-        #Concatenate spatial + frequency features
+        #concatenate spatial + frequency features
         combined = torch.cat([x, freq_features], dim=1)
 
-        #Reduce back to original channel count
+        #reduce back to original channel count
         out = self.channel_reduce(combined)
 
         return out
@@ -96,6 +102,7 @@ class FFTLayer(nn.Module):
 
 
 #3.Model with FFT integration
+# base architecture: Tan & Le (2019)
 class EfficientNetFFT(nn.Module):
     
     POSITION_MAP = {
@@ -114,16 +121,14 @@ class EfficientNetFFT(nn.Module):
         self.position = position
         block_idx, channels = self.POSITION_MAP[position]
 
-        base_model = models.efficientnet_b0(
-            weights=None
-        )
+        base_model = models.efficientnet_b0(weights=None)  # load EfficientNet-B0 without pretrained weights (Tan & Le, 2019)
 
-        #Split features into before/after the insertion point
+        #split features into before/after the insertion point
         self.features_before = nn.Sequential(*list(base_model.features[:block_idx + 1]))
         self.fft_layer = FFTLayer(in_channels=channels)
         self.features_after = nn.Sequential(*list(base_model.features[block_idx + 1:]))
 
-        #Pooling and classifier
+        #pooling and classifier
         self.avgpool = base_model.avgpool
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.2),
@@ -141,7 +146,7 @@ class EfficientNetFFT(nn.Module):
 
 
 
-#4Training
+#4. Training  (same  as Effecienet.py)
 def train_one_epoch(model, loader, criterion, optimizer, device):
     model.train()
     running_loss = 0.0
@@ -200,7 +205,7 @@ def validate(model, loader, criterion, device):
 
 
 
-#6.Training loop
+#6.Training loop (same as Effecienet.py)
 def train(model, loaders, save_dir, epochs=EPOCHS, lr=LEARNING_RATE,
           patience=PATIENCE):
     model = model.to(DEVICE)
@@ -273,7 +278,7 @@ def train(model, loaders, save_dir, epochs=EPOCHS, lr=LEARNING_RATE,
 
 
 
-#7.Test evaluation
+#7.Test evaluation (same as Effecienet.py)
 @torch.no_grad()
 def evaluate_test(model, loader, save_dir, device=DEVICE):
     model = model.to(device)
@@ -313,7 +318,7 @@ def evaluate_test(model, loader, save_dir, device=DEVICE):
 
 
 
-#8.Plot training curves
+#8.Plot training curves 
 def plot_history(history: dict, title: str, save_dir: Path):
     epochs = range(1, len(history["train_loss"]) + 1)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
@@ -378,7 +383,7 @@ def plot_position_comparison(all_results: dict, save_dir: Path):
 
 #10.Main 
 if __name__ == "__main__":
-    #Load data with FFT-specific augmentations
+    #load data with FFT-specific augmentations
     loaders = get_dataloaders(experiment="fft")
 
     all_results = {}
@@ -392,7 +397,7 @@ if __name__ == "__main__":
         save_dir = Path(f"./results/fft_{position}_scratch")
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        #Build model
+        #build model
         model = EfficientNetFFT(position=position)
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters()
@@ -401,19 +406,19 @@ if __name__ == "__main__":
         print(f"  Total params:     {total_params:,}")
         print(f"  Trainable params: {trainable_params:,}")
 
-        #Train
+        #train
         model, history = train(model, loaders, save_dir)
 
-        #Load best model and evaluate
+        #load best model and evaluate
         model.load_state_dict(torch.load(save_dir / "best_model.pth",
                                           map_location=DEVICE))
         results = evaluate_test(model, loaders["test"], save_dir)
         all_results[position] = results
 
-        #Plot training curves
+        #plot training curves
         plot_history(history, f"FFT @ {position}", save_dir)
 
-    #Summary across all positions
+    #summary across all positions
     print("\n" + "=" * 60)
     print("FFT POSITION COMPARISON SUMMARY")
     print("=" * 60)
@@ -424,11 +429,11 @@ if __name__ == "__main__":
               f"{res['recall']:>8.4f} {res['f1']:>8.4f}")
     print("=" * 60)
 
-    #Save combined results
+    #save combined results
     combined_dir = Path("./results/fft_combined_scratch")
     combined_dir.mkdir(parents=True, exist_ok=True)
     with open(combined_dir / "all_positions.json", "w") as f:
         json.dump(all_results, f, indent=2)
 
-    #Plot comparisons
+    #plot comparisons
     plot_position_comparison(all_results, combined_dir)

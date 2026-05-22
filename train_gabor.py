@@ -10,6 +10,11 @@
 #  - 'middle' : After block 5 (mid-level features)
 #  - 'late'   : After block 7 (high-level features)
 
+# The learnable Gabor filter implementation is based on:
+#   Luan, S., Chen, C., Zhang, B., Han, J., & Liu, J. (2019). Gabor Convolutional Networks. IEEE Trans. Image Processing, 27(9), 4357-4366.
+#    doi: 10.1109/TIP.2018.2835143
+
+
 import os
 import time
 import json
@@ -30,7 +35,7 @@ import matplotlib.pyplot as plt
 from dataset import get_dataloaders, DATASET_ROOT, IMG_SIZE, BATCH_SIZE
 
 
-#1.Configuration
+#1.Configuration same as Effecienet.py
 EPOCHS = 20
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4
@@ -44,7 +49,7 @@ print(f"Using device: {DEVICE}")
 
 
 
-#2.Gabor Filter Layer
+#2.Gabor Filter Layer (based on Luan et al. (2019))
 class GaborConv2d(nn.Module):
     #Learnable Gabor filter bank implemented as a convolutional layer.
 
@@ -64,14 +69,15 @@ class GaborConv2d(nn.Module):
         self.in_channels = in_channels
         self.num_filters = num_filters
         self.kernel_size = kernel_size
-        self.padding = kernel_size // 2
+        self.padding = kernel_size // 2 # have the same-padding to save spatial dimensions
 
-        #Total output filters = num_filters per input channel
-        #Apply the same Gabor bank to each input channel
+        #total output filters = num_filters per input channel
+        #apply the same Gabor bank to each input channel
         total_filters = num_filters
 
         #learnable Gabor parameters
         #Initialize theta with evenly spaced orientations [0, pi)
+        # (Luan et al., 2019,)
         theta_init = torch.linspace(0, math.pi, total_filters + 1)[:-1]
         self.theta = nn.Parameter(theta_init)
 
@@ -87,14 +93,14 @@ class GaborConv2d(nn.Module):
         #psi: phase offset
         self.psi = nn.Parameter(torch.zeros(total_filters))
 
-        #Pre-calculate coordinate grids 
+        # pre-calculate coordinate grids 
         x = torch.arange(kernel_size).float() - kernel_size // 2
         y = torch.arange(kernel_size).float() - kernel_size // 2
         self.register_buffer('grid_y', y.view(-1, 1).repeat(1, kernel_size))
         self.register_buffer('grid_x', x.view(1, -1).repeat(kernel_size, 1))
 
     def _make_gabor_kernels(self) -> torch.Tensor:
-        #Generate Gabor filter kernels from current parameters.
+        # generate Gabor filter kernels from current parameters.
         kernels = []
         for i in range(self.num_filters):
             theta = self.theta[i]
@@ -103,16 +109,17 @@ class GaborConv2d(nn.Module):
             gamma = self.gamma[i].clamp(min=0.1)
             psi = self.psi[i]
 
-            #Rotate coordinates
+            #rotate coordinates
             x_theta = self.grid_x * torch.cos(theta) + self.grid_y * torch.sin(theta)
             y_theta = -self.grid_x * torch.sin(theta) + self.grid_y * torch.cos(theta)
 
-            #Gabor formula
+            #gabor formula  (Luan et al., 2019)
+            # g(x,y) = exp(-(x'^2 + gamma^2 * y'^2) / 2sigma^2) * cos(2pi*x'/lambda + psi)
             gaussian = torch.exp(-0.5 * (x_theta**2 + gamma**2 * y_theta**2) / sigma**2)
             sinusoid = torch.cos(2 * math.pi * x_theta / lambd + psi)
             kernel = gaussian * sinusoid
 
-            #Normalize
+            #normalize
             kernel = kernel / (kernel.norm() + 1e-8)
             kernels.append(kernel)
 
@@ -123,8 +130,8 @@ class GaborConv2d(nn.Module):
         B, C, H, W = x.shape
         kernels = self._make_gabor_kernels()  
 
-        #Apply each Gabor filter to each channel and sum across channels
-        # xpand kernels to match input channels
+        #apply each Gabor filter to each channel and sum across channels
+        # expand kernels to match input channels
         kernels_expanded = kernels.repeat(1, C, 1, 1) 
 
         out = nn.functional.conv2d(x, kernels_expanded, padding=self.padding)
@@ -134,8 +141,8 @@ class GaborConv2d(nn.Module):
 
 #3.Gabor Integration Layer
 class GaborLayer(nn.Module):
-    #Integrates Gabor filter responses with the original feature maps.
-
+    #integrates Gabor filter responses with the original feature maps.
+    #Concat-and-reduce strategy to combine texture + spatial features
     #Pipeline:
         #1. Apply learnable Gabor filter bank → texture response maps
         #2. Pass through BatchNorm + ReLU
@@ -147,7 +154,7 @@ class GaborLayer(nn.Module):
     def __init__(self, in_channels: int, num_gabor_filters: int = 16,
                  kernel_size: int = 7):
         super().__init__()
-
+       #Gabor filter bank adapted from Luan et al., 2019.
         self.gabor_conv = GaborConv2d(
             in_channels=in_channels,
             num_filters=num_gabor_filters,
@@ -175,19 +182,18 @@ class GaborLayer(nn.Module):
         gabor_out = self.gabor_conv(x)
         gabor_features = self.gabor_process(gabor_out)
 
-        #Concatenate spatial + texture features
+        #concatenate spatial + texture features
         combined = torch.cat([x, gabor_features], dim=1)
 
-        #Reduce back to original channel count
+        #reduce back to original channel count
         out = self.channel_reduce(combined)
 
         return out
 
 
-# ---------------------------------------------------------------------------
-# 4.  Model with Gabor integration
-# ---------------------------------------------------------------------------
 
+# 4.Model with Gabor integration
+#Base architecture: Tan & Le (2019)
 class EfficientNetGabor(nn.Module):
     POSITION_MAP = {
         "early":  (2, 24),
@@ -209,7 +215,7 @@ class EfficientNetGabor(nn.Module):
         
         base_model = models.efficientnet_b0(weights=None)
 
-        #Split features into before/after the insertion point
+        #split features into before/after the insertion point
         self.features_before = nn.Sequential(*list(base_model.features[:block_idx + 1]))
         self.gabor_layer = GaborLayer(
             in_channels=channels,
@@ -218,7 +224,7 @@ class EfficientNetGabor(nn.Module):
         )
         self.features_after = nn.Sequential(*list(base_model.features[block_idx + 1:]))
 
-        #Pooling and classifier
+        #pooling and classifier
         self.avgpool = base_model.avgpool
         self.classifier = nn.Sequential(
             nn.Dropout(p=0.2),
@@ -234,7 +240,7 @@ class EfficientNetGabor(nn.Module):
         x = self.classifier(x)
         return x
 
-#5.Training 
+#5.Training  (same as Effecienet.py)
 def train_one_epoch(model, loader, criterion, optimizer, device):
     model.train()
     running_loss = 0.0
@@ -266,7 +272,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
 
 
 
-#6.Validation 
+#6.Validation (same as Effecienet.py)
 @torch.no_grad()
 def validate(model, loader, criterion, device):
     model.eval()
@@ -293,7 +299,7 @@ def validate(model, loader, criterion, device):
 
 
 
-#7.Training 
+#7.Training (same as Effecienet.py)
 def train(model, loaders, save_dir, epochs=EPOCHS, lr=LEARNING_RATE,
           patience=PATIENCE):
     model = model.to(DEVICE)
@@ -366,7 +372,7 @@ def train(model, loaders, save_dir, epochs=EPOCHS, lr=LEARNING_RATE,
 
 
 
-#8.Test evaluation
+#8.Test evaluation (same as Effecienet.py)
 @torch.no_grad()
 def evaluate_test(model, loader, save_dir, device=DEVICE):
     model = model.to(device)
@@ -435,7 +441,7 @@ def plot_history(history: dict, title: str, save_dir: Path):
 
 #10.Compare all positions
 def plot_position_comparison(all_results: dict, save_dir: Path):
-    """Compare test metrics across Gabor insertion positions."""
+    #compare test metrics across Gabor insertion positions.
     positions = list(all_results.keys())
     metrics = ["accuracy", "precision", "recall", "f1"]
 
@@ -471,7 +477,7 @@ def plot_position_comparison(all_results: dict, save_dir: Path):
 
 #11.Main
 if __name__ == "__main__":
-    #Load data 
+    #load data 
     loaders = get_dataloaders(experiment="gabor")
 
     all_results = {}
@@ -484,7 +490,7 @@ if __name__ == "__main__":
         save_dir = Path(f"./results/gabor_{position}_scratch")
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        #Build model
+        #build model
         model = EfficientNetGabor(position=position)
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters()
@@ -493,19 +499,19 @@ if __name__ == "__main__":
         print(f"  Total params:     {total_params:,}")
         print(f"  Trainable params: {trainable_params:,}")
 
-        #Train
+        #train
         model, history = train(model, loaders, save_dir)
 
-        #Load best model and evaluate
+        #load best model and evaluate
         model.load_state_dict(torch.load(save_dir / "best_model.pth",
                                           map_location=DEVICE))
         results = evaluate_test(model, loaders["test"], save_dir)
         all_results[position] = results
 
-        #Plot training curves
+        #plot training curves
         plot_history(history, f"Gabor @ {position}", save_dir)
 
-    #Summary across all positions
+    #summary across all positions
     print("\n" + "=" * 60)
     print("GABOR POSITION COMPARISON SUMMARY")
     print("=" * 60)
@@ -516,11 +522,11 @@ if __name__ == "__main__":
               f"{res['recall']:>8.4f} {res['f1']:>8.4f}")
     print("=" * 60)
 
-    #Save combined results
+    #save combined results
     combined_dir = Path("./results/gabor_combined_scratch")
     combined_dir.mkdir(parents=True, exist_ok=True)
     with open(combined_dir / "all_positions.json", "w") as f:
         json.dump(all_results, f, indent=2)
 
-    #Plot comparisons
+    #plot comparisons
     plot_position_comparison(all_results, combined_dir)
