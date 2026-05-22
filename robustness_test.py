@@ -20,7 +20,8 @@ from Effecienet import build_model
 from train_fft import EfficientNetFFT
 from train_gabor import EfficientNetGabor
 
-
+# Evaluation methodology follows:
+#   Bammey (2023), Synthbuster; Yan et al. (2024), Sanity Check
 
 #1. Configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -67,19 +68,21 @@ def load_model(model_type: str, model_path: Path) -> nn.Module:
 
 
 
-#3.Perturbations
+#3.perturbations
+#compress and decompress via JPEG at given quality level.
 def apply_jpeg_compression(image: Image.Image, quality: int) -> Image.Image:
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=quality)
     buffer.seek(0)
     return Image.open(buffer).convert("RGB")
 
-
+# add zero-mean Gaussian noise with  sigma, clamp to [0,1].
 def apply_gaussian_noise(tensor: torch.Tensor, sigma: float) -> torch.Tensor:
+    
     noise = torch.randn_like(tensor) * sigma
     return (tensor + noise).clamp(0.0, 1.0)
 
-
+# downscale then upscale back to target size.
 def apply_resolution_shift(image: Image.Image, factor: float,
                             target_size: int = IMG_SIZE) -> Image.Image:
     w, h = image.size
@@ -113,6 +116,7 @@ class PerturbedDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
+        # apply the perturbations before preprocessing
         path, label = self.samples[idx]
         image = Image.open(path).convert("RGB")
 
@@ -125,7 +129,7 @@ class PerturbedDataset(Dataset):
 
         image = self.resize(image)
         tensor = self.to_tensor(image)
-
+        # noise is applied to tensor after ToTensor, and before normalize.
         if self.perturbation == "noise":
             tensor = apply_gaussian_noise(tensor, sigma=self.level)
 
