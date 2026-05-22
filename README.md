@@ -18,13 +18,14 @@ AI-ArtBench (Ukiyo-e subset): https://www.kaggle.com/datasets/ravidussilva/real-
 ## Requirements
 Requirements
 
-Python 3.11
-PyTorch
-torchvision
-scikit-learn
-matplotlib
-numpy
-shap
+Python 3.11z
+PyTorch 2.11.0 
+torchvision 0.26.0
+scikit-learn 1.8.0 
+SHAP 0.51.0
+Matplotlib 3.10.8 
+NumPy 2.4.4
+Pillow 12.2.0
 
-pip install torch torchvision scikit-learn matplotlib numpy shap
+pip install torch torchvision scikit-learn matplotlib numpy shap pillow
 
