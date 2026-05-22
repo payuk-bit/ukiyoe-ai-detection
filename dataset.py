@@ -9,7 +9,9 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import numpy as np
 
-
+# Dataset: AI-ArtBench (Ukiyo-e subset)
+#   Silva, R. (n.d.). AI-ArtBench: Real vs AI-generated artwork.
+#   https://www.kaggle.com/datasets/ravidussilva/real-ai-art
 
 #1.Configuration
 DATASET_ROOT = Path("C:/Users/deowo/OneDrive/Documents/thesis/ai-artbench")
@@ -47,16 +49,16 @@ def get_train_transforms(img_size: int = IMG_SIZE,
         ]
  
     elif experiment == "fft":
-        #No rotation  
-        #Minimal color 
+        #no rotation  
+        #minimal color 
         augment = [
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.ColorJitter(brightness=0.05),
         ]
  
     elif experiment == "gabor":
-        # No rotation 
-        # No color jitter
+        # no rotation 
+        # no color jitter
         augment = [
             transforms.RandomHorizontalFlip(p=0.5),
         ]
@@ -74,7 +76,7 @@ def get_train_transforms(img_size: int = IMG_SIZE,
  
  
 def get_eval_transforms(img_size: int = IMG_SIZE) -> transforms.Compose:
-    """Validation / test transforms (no augmentation)."""
+    #Validation / test transforms (no augmentation).
     return transforms.Compose([
         transforms.Resize((img_size, img_size),
                           interpolation=transforms.InterpolationMode.BILINEAR,
@@ -105,14 +107,14 @@ class UkiyoeDataset(Dataset):
         self.transform = transform
         self.samples: list[tuple[str, int]] = []  # (filepath, label)
  
-        #Collect human images  →  label 0
+        # human images  →  label 0
         human_dir = self.root / HUMAN_DIR
         if human_dir.is_dir():
             for fp in sorted(human_dir.iterdir()):
                 if fp.suffix.lower() in self.SUPPORTED_EXT:
                     self.samples.append((str(fp), 0))
  
-        #Collect AI images  →  label 1
+        # AI images  →  label 1
         for ai_dir_name in AI_DIRS:
             ai_dir = self.root / ai_dir_name
             if ai_dir.is_dir():
@@ -129,7 +131,7 @@ class UkiyoeDataset(Dataset):
         print(f"[{split.upper()}] Loaded {len(self.samples)} images  "
               f"(human={self.label_counts()[0]}, AI={self.label_counts()[1]})")
  
-    # --- helpers ---
+    # helpers 
     def label_counts(self) -> dict[int, int]:
         counts = {0: 0, 1: 0}
         for _, label in self.samples:
@@ -153,7 +155,7 @@ def split_train_val(
     val_fraction: float = VALID_SPLIT,
     seed: int = SEED,
 ) -> tuple[torch.utils.data.Subset, torch.utils.data.Subset]:
-    """Stratified split of the training set into train and validation subsets."""
+    # split of the training set into train and validation subsets.
     from sklearn.model_selection import train_test_split
  
     labels = [label for _, label in dataset.samples]
@@ -174,9 +176,9 @@ def split_train_val(
  
  
 
-#5. Weighted sampler, handles class imbalance
+#5.Weighted sampler handles class imbalance
 def make_weighted_sampler(subset: torch.utils.data.Subset) -> WeightedRandomSampler:
-    #Creates a WeightedRandomSampler so each batch is roughly balanced.
+    #creates a WeightedRandomSampler so each batch is roughly balanced.
 
     labels = [subset.dataset.samples[i][1] for i in subset.indices]
     class_counts = np.bincount(labels)
@@ -201,23 +203,23 @@ def get_dataloaders(
     seed: int = SEED,
     experiment: str = "baseline",
 ) -> dict[str, DataLoader]:
-    """
-    Returns a dict with 'train', 'val', and 'test' DataLoaders.
-    """
-    #Full training set 
+    
+    #returns a dict with 'train', 'val', and 'test' DataLoaders.
+    
+    #full training set 
     full_train = UkiyoeDataset(root, split="train",
                                transform=get_train_transforms(img_size, experiment))
     train_subset, val_subset = split_train_val(full_train, val_fraction, seed)
  
-    #Validation subset should use eval transforms .
-    #Wrap it so the transform is swapped at __getitem__ time.
+    #validation subset should use eval transforms .
+    #wrap it so the transform is swapped at __getitem__ time.
     val_subset.dataset_transform_override = get_eval_transforms(img_size)
  
-    #Test set
+    #test set
     test_set = UkiyoeDataset(root, split="test",
                              transform=get_eval_transforms(img_size))
  
-    #Sampler 
+    #sampler 
     train_sampler = (make_weighted_sampler(train_subset)
                      if use_weighted_sampler else None)
  
@@ -254,7 +256,7 @@ def get_dataloaders(
 #7.Validation-transform wrapper
 class _ValTransformSubset(torch.utils.data.Dataset):
     
-    #Wraps a Subset so that evaluation transforms are applied instead of
+    #wraps a Subset so that evaluation transforms are applied instead of
     #the training transforms stored on the underlying dataset.
     
     def __init__(self, subset: torch.utils.data.Subset,
@@ -272,7 +274,7 @@ class _ValTransformSubset(torch.utils.data.Dataset):
         return image, label
  
  
-#Updated get_dataloaders using the wrapper
+#updated get_dataloaders using the wrapper
 def get_dataloaders(
     root: Path = DATASET_ROOT,
     img_size: int = IMG_SIZE,
@@ -282,20 +284,21 @@ def get_dataloaders(
     use_weighted_sampler: bool = True,
     seed: int = SEED,
     experiment: str = "baseline",
+    #Create train, val, and test DataLoaders.
 ) -> dict[str, DataLoader]:
-    """
-    Returns a dict with 'train', 'val', and 'test' DataLoaders.
+   
+    # returns a dict with 'train', 'val', and 'test' DataLoaders.
  
-    Args:
-        experiment: One of 'baseline', 'fft', 'gabor'.
-                    Controls which augmentations are applied during training.
-    """
+    # arguments:
+            #experiment: One of 'baseline', 'fft', 'gabor'.
+            #controls which augmentations are applied during training.
+   
     print(f"  Using '{experiment}' augmentation profile")
     full_train = UkiyoeDataset(root, split="train",
                                transform=get_train_transforms(img_size, experiment))
     train_subset, val_subset = split_train_val(full_train, val_fraction, seed)
  
-    # Wrap val subset with eval transforms
+    # wrap val subset with eval transforms
     val_dataset = _ValTransformSubset(val_subset, get_eval_transforms(img_size))
  
     test_set = UkiyoeDataset(root, split="test",
@@ -369,11 +372,11 @@ if __name__ == "__main__":
  
     loaders = get_dataloaders()
  
-    #Print shapes & label distribution
+    #print shapes & label distribution
     for split_name, loader in loaders.items():
         imgs, lbls = next(iter(loader))
         print(f"\n{split_name}: batch shape = {imgs.shape}, "
               f"labels = {lbls.tolist()[:8]}...")
  
-    #Show a sample batch from the training set
+    #show a sample batch from the training set
     show_batch(loaders["train"])
