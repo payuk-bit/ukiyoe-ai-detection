@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 from PIL import Image
 from torchvision import transforms
 import shap
@@ -15,13 +16,18 @@ from dataset import (
     UKIYOE_MEAN, UKIYOE_STD,
 )
 from Effecienet import build_model
-from train_fft import EfficientNetFFT
+from train_fft import EfficientNetFFT      # MUST be the CORRECTED FFT layer
 from train_gabor import EfficientNetGabor
 
 warnings.filterwarnings("ignore")
 
 #   use SHAP GradientExplainer for pixel-level feature attribution:
 #   Lundberg, S. M., & Lee, S.-I. (2017). A Unified Approach to Interpreting Model Predictions. NeurIPS 2017.
+#
+# IMPORTANT: EfficientNetFFT above must be the corrected layer (complex weighting
+# in the frequency domain followed by inverse FFT back to the spatial domain).
+# Point the FFT checkpoint below at a model trained with the corrected layer,
+# otherwise the SHAP maps describe the old, frequency-domain-only model.
 
 #1.Configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -44,11 +50,20 @@ torch.manual_seed(SEED)
 print(f"Using device: {DEVICE}")
 
 
+def log_norm(arr, floor=1e-6):
+    # build a logarithmic colour normalization so small variations are visible
+    arr = np.asarray(arr)
+    positive = arr[arr > 0]
+    vmin = max(float(positive.min()), floor) if positive.size else floor
+    vmax = max(float(arr.max()), vmin * 10)
+    return LogNorm(vmin=vmin, vmax=vmax)
+
+
 #2.Model wrapper
 class SHAPModelWrapper(nn.Module):
 #wraps any model to guarantee output shape (N, 1).
 #SHAP GradientExplainer needs consistent output dimensions.
-   
+
     def __init__(self, model):
         super().__init__()
         self.model = model
@@ -122,11 +137,11 @@ def denormalize(tensor):  #reverse normalization for display.
 
 #5.Calcuting SHAP
 def compute_shap_values(model, background_data, explain_data):
-    
+
     #calculateompute SHAP values using GradientExplainer (Lundberg & Lee, 2017).
     #processes images in small batches to avoid memory issues.
     #returns numpy array of shape (N, 3, H, W).
-    
+
     background_data = background_data.to(DEVICE)
 
     explainer = shap.GradientExplainer(model, background_data)
@@ -138,7 +153,7 @@ def compute_shap_values(model, background_data, explain_data):
         batch = explain_data[i:i + batch_size].to(DEVICE)
         sv = explainer.shap_values(batch)
 
-        #handle list output 
+        #handle list output
         if isinstance(sv, list):
             sv = sv[0]
 
@@ -148,27 +163,27 @@ def compute_shap_values(model, background_data, explain_data):
         else:
             sv = np.array(sv)
 
-        
+
        #print shape on first batch for debugging
         if i == 0:
             print(f"    Raw SHAP batch shape: {sv.shape}")
 
-        #remove trailing dimension of 1 
+        #remove trailing dimension of 1
         sv = sv.squeeze(-1)
 
-        # fixes shape 
+        # fixes shape
         if sv.ndim == 5:
             sv = sv[0]
         if sv.ndim == 4:
-            
+
             if sv.shape[1] == 3 and sv.shape[2] == IMG_SIZE:
-                pass  
+                pass
             elif sv.shape[0] == 3 and sv.shape[2] == IMG_SIZE:
-                sv = np.transpose(sv, (1, 0, 2, 3))  
+                sv = np.transpose(sv, (1, 0, 2, 3))
             elif sv.shape[3] == 3:
-                sv = np.transpose(sv, (0, 3, 1, 2)) 
+                sv = np.transpose(sv, (0, 3, 1, 2))
         elif sv.ndim == 3:
-            
+
             sv = sv[np.newaxis, ...]
 
         all_shap.append(sv)
@@ -183,7 +198,7 @@ def compute_shap_values(model, background_data, explain_data):
 def plot_shap_examples(shap_values, images, labels, model_name, save_dir,
                        n_show=8):
     n_show = min(n_show, shap_values.shape[0])
- #plot original, SHAP heatmap, and overlay for sample images.
+ #plot original, SHAP heatmap (log scale), and overlay for sample images.
     fig, axes = plt.subplots(3, n_show, figsize=(2.5 * n_show, 8))
 
     for i in range(n_show):
@@ -193,12 +208,12 @@ def plot_shap_examples(shap_values, images, labels, model_name, save_dir,
         axes[0, i].axis("off")
 
         shap_map = np.abs(shap_values[i]).mean(axis=0)
-        axes[1, i].imshow(shap_map, cmap="hot")
-        axes[1, i].set_title("SHAP importance", fontsize=9)
+        axes[1, i].imshow(shap_map, cmap="hot", norm=log_norm(shap_map))
+        axes[1, i].set_title("SHAP importance (log)", fontsize=9)
         axes[1, i].axis("off")
 
         axes[2, i].imshow(img)
-        axes[2, i].imshow(shap_map, cmap="hot", alpha=0.5)
+        axes[2, i].imshow(shap_map, cmap="hot", alpha=0.5, norm=log_norm(shap_map))
         axes[2, i].set_title("Overlay", fontsize=9)
         axes[2, i].axis("off")
 
@@ -206,7 +221,7 @@ def plot_shap_examples(shap_values, images, labels, model_name, save_dir,
     axes[1, 0].set_ylabel("SHAP", fontsize=10)
     axes[2, 0].set_ylabel("Overlay", fontsize=10)
 
-    plt.suptitle(f"SHAP Feature Importance — {model_name}", fontsize=13)
+    plt.suptitle(f"SHAP Feature Importance (log scale) — {model_name}", fontsize=13)
     plt.tight_layout()
     plt.savefig(save_dir / f"shap_examples_{model_name.lower().replace(' ', '_')}.png",
                 dpi=150)
@@ -216,10 +231,10 @@ def plot_shap_examples(shap_values, images, labels, model_name, save_dir,
 
 def plot_mean_importance(shap_values, model_name, save_dir):
     mean_shap = np.abs(shap_values).mean(axis=(0, 1))
- #plot mean SHAP importance map averaged across all images.
+ #plot mean SHAP importance map (log scale) averaged across all images.
     fig, ax = plt.subplots(figsize=(6, 5))
-    im = ax.imshow(mean_shap, cmap="hot")
-    ax.set_title(f"Mean SHAP Importance — {model_name}", fontsize=12)
+    im = ax.imshow(mean_shap, cmap="hot", norm=log_norm(mean_shap))
+    ax.set_title(f"Mean SHAP Importance (log) — {model_name}", fontsize=12)
     ax.axis("off")
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     plt.tight_layout()
@@ -238,22 +253,24 @@ def plot_by_class(shap_values, labels, model_name, save_dir):  #Plot SHAP maps s
 
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4.5))
 
-    im1 = ax1.imshow(human_shap, cmap="hot")
-    ax1.set_title("Human images", fontsize=11)
+    # human and AI panels use the log scale so the structure is visible
+    im1 = ax1.imshow(human_shap, cmap="hot", norm=log_norm(human_shap))
+    ax1.set_title("Human images (log)", fontsize=11)
     ax1.axis("off")
     plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
 
-    im2 = ax2.imshow(ai_shap, cmap="hot")
-    ax2.set_title("AI images", fontsize=11)
+    im2 = ax2.imshow(ai_shap, cmap="hot", norm=log_norm(ai_shap))
+    ax2.set_title("AI images (log)", fontsize=11)
     ax2.axis("off")
     plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
 
+    # difference map stays linear because it is signed (RdBu_r)
     diff = ai_shap - human_shap
     max_val = max(abs(float(diff.min())), abs(float(diff.max())))
     if max_val == 0:
         max_val = 1.0
     im3 = ax3.imshow(diff, cmap="RdBu_r", vmin=-max_val, vmax=max_val)
-    ax3.set_title("Difference (AI − Human)", fontsize=11)
+    ax3.set_title("Difference (AI - Human)", fontsize=11)
     ax3.axis("off")
     plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04)
 
@@ -265,21 +282,50 @@ def plot_by_class(shap_values, labels, model_name, save_dir):  #Plot SHAP maps s
     print(f"  Saved class comparison for {model_name}")
 
 
-def plot_channel_importance(shap_values, model_name, save_dir): # make bar chart of mean |SHAP| per RGB channel."""
-    r_imp = float(np.abs(shap_values[:, 0, :, :]).mean())
-    g_imp = float(np.abs(shap_values[:, 1, :, :]).mean())
-    b_imp = float(np.abs(shap_values[:, 2, :, :]).mean())
+def plot_channel_importance(shap_values, labels, model_name, save_dir):
+    # report the RELATIVE channel split (fraction of total |SHAP|), which is
+    # comparable across models, instead of the raw mean which is not. Also
+    # compute the per-class relative split, normalized within each class.
+    labels_arr = np.array(labels)
+
+    def channel_means(sv):
+        return (float(np.abs(sv[:, 0]).mean()),
+                float(np.abs(sv[:, 1]).mean()),
+                float(np.abs(sv[:, 2]).mean()))
+
+    def relative(triplet):
+        total = sum(triplet) or 1.0
+        return [v / total for v in triplet]
+
+    raw = channel_means(shap_values)
+    rel = relative(raw)
+    human_rel = relative(channel_means(shap_values[labels_arr == 0]))
+    ai_rel = relative(channel_means(shap_values[labels_arr == 1]))
+
+    channel_data = {
+        "raw": {"red": raw[0], "green": raw[1], "blue": raw[2]},
+        "relative": {"red": rel[0], "green": rel[1], "blue": rel[2]},
+        "human_relative": {"red": human_rel[0], "green": human_rel[1], "blue": human_rel[2]},
+        "ai_relative": {"red": ai_rel[0], "green": ai_rel[1], "blue": ai_rel[2]},
+    }
+    print(f"  {model_name} relative channel split (overall): "
+          f"R={rel[0]:.3f} G={rel[1]:.3f} B={rel[2]:.3f}")
+    print(f"  {model_name} relative split human/AI: "
+          f"R {human_rel[0]:.3f}/{ai_rel[0]:.3f}  "
+          f"G {human_rel[1]:.3f}/{ai_rel[1]:.3f}  "
+          f"B {human_rel[2]:.3f}/{ai_rel[2]:.3f}")
 
     channels = ["Red", "Green", "Blue"]
-    values = [r_imp, g_imp, b_imp]
     colors_rgb = ["#e74c3c", "#2ecc71", "#3498db"]
 
     fig, ax = plt.subplots(figsize=(6, 4))
-    bars = ax.bar(channels, values, color=colors_rgb, alpha=0.85)
-    for bar, val in zip(bars, values):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.00005,
-                f"{val:.5f}", ha="center", va="bottom", fontsize=10)
-    ax.set_ylabel("Mean |SHAP value|")
+    bars = ax.bar(channels, rel, color=colors_rgb, alpha=0.85)
+    for bar, val in zip(bars, rel):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
+                f"{val:.3f}", ha="center", va="bottom", fontsize=10)
+    ax.axhline(1 / 3, color="#888", linestyle="--", linewidth=1)  # equal-importance line
+    ax.set_ylabel("Relative channel importance (fraction of total)")
+    ax.set_ylim(0, 0.6)
     ax.set_title(f"Channel Importance — {model_name}", fontsize=12)
     ax.grid(True, alpha=0.3, axis="y")
 
@@ -288,6 +334,7 @@ def plot_channel_importance(shap_values, model_name, save_dir): # make bar chart
                 dpi=150)
     plt.show()
     print(f"  Saved channel importance for {model_name}")
+    return channel_data
 
 
 
@@ -295,18 +342,18 @@ def plot_channel_importance(shap_values, model_name, save_dir): # make bar chart
 def plot_model_comparison(all_results: dict, save_dir: Path):
     n_models = len(all_results)
     fig, axes = plt.subplots(1, n_models, figsize=(5 * n_models, 4.5))
- # make side-by-side mean SHAP maps for all models.
+ # make side-by-side mean SHAP maps (log scale) for all models.
     if n_models == 1:
         axes = [axes]
 
     for ax, (model_name, shap_vals) in zip(axes, all_results.items()):
         mean_shap = np.abs(shap_vals).mean(axis=(0, 1))
-        im = ax.imshow(mean_shap, cmap="hot")
+        im = ax.imshow(mean_shap, cmap="hot", norm=log_norm(mean_shap))
         ax.set_title(model_name, fontsize=11)
         ax.axis("off")
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    plt.suptitle("Mean SHAP Importance — Model Comparison", fontsize=13)
+    plt.suptitle("Mean SHAP Importance (log scale) — Model Comparison", fontsize=13)
     plt.tight_layout()
     plt.savefig(save_dir / "shap_model_comparison.png", dpi=150)
     plt.show()
@@ -389,6 +436,7 @@ if __name__ == "__main__":
 
     #run SHAP for each model
     all_results = {}
+    all_channel_data = {}
 
     for model_name, model_type, model_path in MODELS:
         print("\n" + "#" * 60)
@@ -396,7 +444,7 @@ if __name__ == "__main__":
         print("#" * 60)
 
         if not model_path.exists():
-            print(f"  ⚠ Model not found at {model_path}, skipping...")
+            print(f"  Model not found at {model_path}, skipping...")
             continue
 
         model = load_model(model_type, model_path)
@@ -412,11 +460,17 @@ if __name__ == "__main__":
                            model_name, SAVE_DIR)
         plot_mean_importance(shap_values, model_name, SAVE_DIR)
         plot_by_class(shap_values, explain_labels, model_name, SAVE_DIR)
-        plot_channel_importance(shap_values, model_name, SAVE_DIR)
+        all_channel_data[model_name] = plot_channel_importance(
+            shap_values, explain_labels, model_name, SAVE_DIR)
 
         del model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    #save channel importance (raw + relative + per class) for all models
+    with open(SAVE_DIR / "channel_importance.json", "w") as f:
+        json.dump(all_channel_data, f, indent=2)
+    print(f"\nSaved channel importance to {SAVE_DIR / 'channel_importance.json'}")
 
     #model comparisons
     if len(all_results) > 1:

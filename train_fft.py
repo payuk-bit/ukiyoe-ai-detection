@@ -21,6 +21,7 @@ import time
 import json
 from pathlib import Path
 
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -49,56 +50,30 @@ print(f"Using device: {DEVICE}")
 
 
 #2.FFT Layer
+import torch
+import torch.nn as nn
+
 class FFTLayer(nn.Module):
-    
-    #Learnable FFT integration layer.
-
-    #Computes the 2D FFT magnitude spectrum of the input feature maps,
-    #passes it through a learnable 1x1 convolution to weight frequency components, and concatenates the result with the original spatial features. 
-    #A 1x1 convolution then reduces the doubled channels back  to the original channel count.
-    #This allows the network to learn from spatial and spectral representations.
-
-    def __init__(self, in_channels: int):
+    """Spectral layer: FFT -> learnable weighting in the frequency domain
+    -> inverse FFT back to the SPATIAL domain, so locality is preserved
+    before concatenation with the spatial features."""
+    def __init__(self, in_channels):
         super().__init__()
-        self.in_channels = in_channels
+        # Learnable frequency-domain weighting, applied to the real and
+        # imaginary parts. Keeping both parts retains phase, which is
+        # required for a meaningful inverse transform.
+        self.conv_r = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.conv_i = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.reduce = nn.Conv2d(2 * in_channels, in_channels, kernel_size=1)
+        self.bn = nn.BatchNorm2d(in_channels)
+        self.act = nn.ReLU(inplace=True)
 
-        #learnable weighting of frequency components
-        self.freq_weight = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(in_channels),
-            nn.ReLU(inplace=True),
-        )
-
-        #channel reduction: concatenated spatial + freq, back to original
-        self.channel_reduce = nn.Sequential(
-            nn.Conv2d(in_channels * 2, in_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(in_channels),
-            nn.ReLU(inplace=True),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-
-        #calculate 2D FFT and shift zero-frequency to center
-        # (Bammey, 2023)
-        fft = torch.fft.fft2(x, norm="ortho")
-        fft_shifted = torch.fft.fftshift(fft)
-
-        #extract magnitude spectrum 
-        # (Bammey, 2023)
-        magnitude = torch.abs(fft_shifted)
-        magnitude = torch.log1p(magnitude)
-
-        #learn which frequency components matter
-        freq_features = self.freq_weight(magnitude)
-
-        #concatenate spatial + frequency features
-        combined = torch.cat([x, freq_features], dim=1)
-
-        #reduce back to original channel count
-        out = self.channel_reduce(combined)
-
-        return out
-
+    def forward(self, x):
+        F = torch.fft.fft2(x, norm="ortho")
+        Fw = torch.complex(self.conv_r(F.real), self.conv_i(F.imag))
+        x_freq = torch.fft.ifft2(Fw, norm="ortho").real
+        z = torch.cat([x, x_freq], dim=1)
+        return self.act(self.bn(self.reduce(z)))
 
 
 #3.Model with FFT integration
